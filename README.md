@@ -4,12 +4,12 @@ PDF-QBot is an intelligent document question-answering chatbot that allows users
 
 ## Features
 
-* 📁 **PDF Upload**: Drag and drop a PDF file to initiate interaction.
-* 🔍 **Text Extraction**: Automatically reads and parses the PDF contents.
-* 🧹 **Chunking with Context**: Uses smart recursive character-based chunking for improved contextual understanding.
-* 🧠 **Embeddings via Cohere**: Generates high-quality semantic representations of text.
-* ⚡ **Vector Store with FAISS**: Efficient and scalable similarity search across document chunks.
-* 💬 **Natural Language Querying**: Ask any question, and get instant answers based on the document contents.
+* **PDF Upload**: Drag and drop a PDF file to initiate interaction.
+* **Text Extraction**: Automatically reads and parses the PDF contents.
+* **Chunking with Context**: Uses smart recursive character-based chunking for improved contextual understanding.
+* **Embeddings via Cohere**: Generates high-quality semantic representations of text.
+* **Vector Store with FAISS**: Efficient and scalable similarity search across document chunks.
+* **Natural Language Querying**: Ask any question, and get instant answers based on the document contents.
 
 ## Installation
 
