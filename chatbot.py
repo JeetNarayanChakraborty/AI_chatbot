@@ -47,9 +47,26 @@ if file is not None and sl.session_state.processed_file != file.name:
 
     chunks = text_splitter.split_text(text)
 
-    # Store chunks and their corresponding embedding in vector store
+    # Store chunks and their corresponding embedding in vector store (batched)
     if chunks:
-        sl.session_state.vector_store = FAISS.from_texts(chunks, embedding)
+        import time
+
+        # Create an empty vector store first
+        vector_store = None
+        batch_size = 320  # Process 320 chunks (≈80k tokens) at a time
+
+        # Loop through the chunks in batches
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            if vector_store is None:
+                vector_store = FAISS.from_texts(batch, embedding)
+            else:
+                vector_store.add_texts(batch)
+
+            # Wait 60 seconds between batches to respect the per-minute rate limit
+            time.sleep(60)
+
+        sl.session_state.vector_store = vector_store
         sl.session_state.processed_file = file.name
 
 
