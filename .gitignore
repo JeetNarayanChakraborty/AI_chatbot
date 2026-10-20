@@ -1,1 +1,15 @@
+# Vector store indexes 
+faiss_index/
+semantic_cache/
+
+# Local caches
+.langchain_cache.db
+
+# Environment / secrets
 .env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.idea/
