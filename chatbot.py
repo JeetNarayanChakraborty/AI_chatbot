@@ -160,14 +160,30 @@ def grade_node(state: AgentState):
 def generate_node(state: AgentState):
     question = state["question"]
     docs = state["documents"]
-    context = "\n\n".join(d.page_content for d in docs)
+    context = "\n\n".join(
+        f"[Source {i+1}]\n{d.page_content}" for i, d in enumerate(docs)
+    )
+    coverage = state["coverage_history"][-1] if state["coverage_history"] else 1.0
 
     system_prompt = (
-        "You are an assistant for question-answering tasks. "
-        "Use the following pieces of retrieved context to answer the question. "
-        "If you don't know the answer, say that you don't know.\n\n"
-        f"Context:\n{context}"
+        "You answer questions using ONLY the provided context.\n\n"
+        "Rules:\n"
+        "1. Answer directly and concisely. No preamble, no filler.\n"
+        "2. Cite sources inline using [Source N] next to each claim.\n"
+        "3. If the context covers only part of a multi-part question, "
+        "answer the parts you can and explicitly state what the document does not cover.\n"
+        "4. If the context does not contain the answer, reply exactly: "
+        '"I don\'t know based on the provided document."\n'
+        "5. Never use outside knowledge. Never invent facts, numbers, or source tags.\n"
     )
+    if coverage < 0.8:
+        system_prompt += (
+            f"\nNote: retrieval estimated only {coverage:.0%} coverage. "
+            "Parts of the question may not be answerable from the context. "
+            "Be explicit about what is missing.\n"
+        )
+    system_prompt += f"\nContext:\n{context}"
+
     messages = [
         ("system", system_prompt),
         ("human", question),
