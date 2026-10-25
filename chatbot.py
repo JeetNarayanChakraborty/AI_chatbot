@@ -250,7 +250,7 @@ if "processed_file" not in sl.session_state:
     sl.session_state.processed_file = None
 
 
-# On cold start: try to restore the vector store + last processed file from disk
+# Restore vector store
 if sl.session_state.vector_store is None and os.path.exists(FAISS_INDEX_PATH):
     try:
         sl.session_state.vector_store = FAISS.load_local(
@@ -258,7 +258,7 @@ if sl.session_state.vector_store is None and os.path.exists(FAISS_INDEX_PATH):
             embedding,
             allow_dangerous_deserialization=True,
         )
-        # Restore the filename that was processed last
+        # Restore the filename
         if os.path.exists(PROCESSED_FILE_META):
             with open(PROCESSED_FILE_META, "r") as f:
                 sl.session_state.processed_file = f.read().strip()
