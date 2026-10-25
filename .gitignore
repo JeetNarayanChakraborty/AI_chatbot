@@ -13,3 +13,5 @@ __pycache__/
 *.pyc
 .venv/
 .idea/
+faiss_index/
+processed_file.txt

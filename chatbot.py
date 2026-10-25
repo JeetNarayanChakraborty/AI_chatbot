@@ -7,10 +7,13 @@ from PyPDF2 import PdfReader
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_cohere import CohereEmbeddings, ChatCohere
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_cohere import ChatCohere
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
+
+FAISS_INDEX_PATH = "faiss_index"
+PROCESSED_FILE_META = "processed_file.txt"
 
 
 class AgentState(TypedDict):
@@ -77,10 +80,10 @@ class SemanticCache:
 load_dotenv()
 
 
-cohere_api_key = os.getenv("COHERE_API_KEY")
-os.environ["COHERE_API_KEY"] = cohere_api_key
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+os.environ["GEMINI_API_KEY"] = gemini_api_key
 
-embedding = CohereEmbeddings(model="embed-english-v3.0")
+embedding = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
 semantic_cache = SemanticCache(embedding=embedding, similarity_threshold=0.90)
 llm = ChatCohere(model="command-r7b-12-2024", temperature=0.7)
 
@@ -247,6 +250,24 @@ if "processed_file" not in sl.session_state:
     sl.session_state.processed_file = None
 
 
+# On cold start: try to restore the vector store + last processed file from disk
+if sl.session_state.vector_store is None and os.path.exists(FAISS_INDEX_PATH):
+    try:
+        sl.session_state.vector_store = FAISS.load_local(
+            FAISS_INDEX_PATH,
+            embedding,
+            allow_dangerous_deserialization=True,
+        )
+        # Restore the filename that was processed last
+        if os.path.exists(PROCESSED_FILE_META):
+            with open(PROCESSED_FILE_META, "r") as f:
+                sl.session_state.processed_file = f.read().strip()
+    except Exception:
+        # Corrupted or incompatible index — start fresh
+        sl.session_state.vector_store = None
+        sl.session_state.processed_file = None
+
+
 # Upload pdf files
 sl.header("first chatbot")
 
@@ -274,7 +295,7 @@ if file is not None and sl.session_state.processed_file != file.name:
 
         # Create an empty vector store first
         vector_store = None
-        batch_size = 320  # Process 320 chunks (≈80k tokens) at a time
+        batch_size = 80  # Process 80 chunks (≈20k tokens) at a time
 
         # Loop through the chunks in batches
         for i in range(0, len(chunks), batch_size):
@@ -289,6 +310,12 @@ if file is not None and sl.session_state.processed_file != file.name:
 
         sl.session_state.vector_store = vector_store
         sl.session_state.processed_file = file.name
+
+        # Persist to disk so restarts don't require re-embedding
+        vector_store.save_local(FAISS_INDEX_PATH)
+        with open(PROCESSED_FILE_META, "w") as f:
+            f.write(file.name)
+
         semantic_cache.clear()
 
 
@@ -304,7 +331,7 @@ if user_question:
         cached_answer = semantic_cache.check(user_question)
 
         if cached_answer is not None:
-            sl.success("⚡ Cache hit — returning cached answer")
+            sl.success("Cache hit — returning cached answer")
             sl.write(cached_answer)
         else:
             # 2. Cache miss → run the agentic ReAct loop
@@ -333,7 +360,7 @@ if user_question:
                 )
                 sl.write(f"**Queries issued:** {final_state['previous_queries']}")
 
-            with sl.expander("📚 View Source Documents"):
+            with sl.expander("View Source Documents"):
                 for i, doc in enumerate(final_state["documents"]):
                     sl.markdown(f"**Source {i+1}:**")
                     sl.info(doc.page_content)
