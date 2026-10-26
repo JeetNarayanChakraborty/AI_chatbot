@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import json
 from dotenv import load_dotenv
@@ -172,7 +173,8 @@ def generate_node(state: AgentState):
         "You answer questions using ONLY the provided context.\n\n"
         "Rules:\n"
         "1. Answer directly and concisely. No preamble, no filler.\n"
-        "2. Cite sources inline using [Source N] next to each claim.\n"
+        "2. You MUST cite sources inline using [Source N] next to each claim. "
+        "For example: 'Jeet works at Deloitte [Source 1].'\n"
         "3. If the context covers only part of a multi-part question, "
         "answer the parts you can and explicitly state what the document does not cover.\n"
         "4. If the context does not contain the answer, reply exactly: "
@@ -360,10 +362,25 @@ if user_question:
                 )
                 sl.write(f"**Queries issued:** {final_state['previous_queries']}")
 
+            # Find all citations in the answer
+            cited_sources = re.findall(r"\[Source (\d+)\]", final_state["answer"])
+
+            # Convert to integers, remove duplicates, and sort them
+            cited_indices = sorted(list(set(int(i) - 1 for i in cited_sources)))
+
             with sl.expander("View Source Documents"):
-                for i, doc in enumerate(final_state["documents"]):
-                    sl.markdown(f"**Source {i+1}:**")
-                    sl.info(doc.page_content)
+                # If the LLM cited specific sources, only show those.
+                # If it didn't cite any, show all retrieved docs as a fallback.
+                if cited_indices:
+                    for idx in cited_indices:
+                        if idx < len(final_state["documents"]):
+                            doc = final_state["documents"][idx]
+                            sl.markdown(f"**Source {idx + 1}:**")
+                            sl.info(doc.page_content)
+                else:
+                    for i, doc in enumerate(final_state["documents"]):
+                        sl.markdown(f"**Source {i+1}:**")
+                        sl.info(doc.page_content)
 
             # 4. Cache the final answer
             semantic_cache.store(user_question, final_state["answer"])
