@@ -5,9 +5,13 @@ import json
 from dotenv import load_dotenv
 import streamlit as sl
 from PyPDF2 import PdfReader
+import pymupdf4llm
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+    MarkdownHeaderTextSplitter,
+)
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_cohere import ChatCohere
 from langchain_community.vectorstores import FAISS
@@ -89,19 +93,42 @@ semantic_cache = SemanticCache(embedding=embedding, similarity_threshold=0.90)
 llm = ChatCohere(model="command-r7b-12-2024", temperature=0.7)
 
 
-# Node A: Retrieve (with accumulation + exhaustion detection)
+# Node A: Retrieve (with Parent-Child swapping)
 def retrieve_node(state: AgentState):
     query = state.get("refined_query") or state["question"]
 
+    # 1. Search the tiny Child chunks (k=4 for better coverage)
     new_docs = sl.session_state.vector_store.as_retriever(
-        search_kwargs={"k": 3}
+        search_kwargs={"k": 4}
     ).invoke(query)
 
-    # Accumulate: keep old docs, add only unique new ones
+    # 2. Load the Parent lookup dictionary
+    parent_lookup = {}
+    if os.path.exists("parent_lookup.json"):
+        with open("parent_lookup.json", "r") as f:
+            parent_lookup = json.load(f)
+
+    # 3. Swap Children for Parents
+    parent_docs = []
+    seen_parents = set()
+
+    for doc in new_docs:
+        parent_id = doc.metadata.get("parent_id")
+        if parent_id and parent_id not in seen_parents:
+            # Grab the big parent text
+            parent_content = parent_lookup.get(parent_id, doc.page_content)
+            # Create a new document with the parent content
+            parent_doc = Document(page_content=parent_content, metadata=doc.metadata)
+            parent_docs.append(parent_doc)
+            seen_parents.add(parent_id)
+        elif not parent_id:
+            parent_docs.append(doc)  # Fallback if no parent_id
+
+    # 4. Accumulate: keep old docs, add only unique new ones
     existing = state.get("documents", [])
     seen = {d.page_content for d in existing}
     added = 0
-    for d in new_docs:
+    for d in parent_docs:
         if d.page_content not in seen:
             existing.append(d)
             seen.add(d.page_content)
@@ -279,41 +306,72 @@ with sl.sidebar:
 
 # Read each page and extract text
 if file is not None and sl.session_state.processed_file != file.name:
-    text = ""
-    input_pdf = PdfReader(file)
-    for page in input_pdf.pages:
-        text += page.extract_text()
 
-    # Break it into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-        separators=["\n"], chunk_size=1000, chunk_overlap=150, length_function=len
+    #  Save the uploaded file temporarily so pymupdf can read it
+    temp_path = f"temp_{file.name}"
+    with open(temp_path, "wb") as f:
+        f.write(file.getbuffer())
+
+    with sl.spinner("Parsing PDF structure..."):
+        #  Convert PDF to Markdown (Structure-Aware)
+        md_text = pymupdf4llm.to_markdown(temp_path)
+        os.remove(temp_path)  # Clean up temp file
+
+    #  Split by Headers to create PARENTS
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+    markdown_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on
     )
+    parent_chunks = markdown_splitter.split_text(md_text)
 
-    chunks = text_splitter.split_text(text)
+    #  Create CHILDREN and the Parent Lookup
+    child_splitter = RecursiveCharacterTextSplitter(chunk_size=250, chunk_overlap=50)
 
-    # Store chunks and their corresponding embedding in vector store (batched)
-    if chunks:
+    final_children = []
+    parent_lookup = {}
+
+    for i, parent in enumerate(parent_chunks):
+        parent_id = f"parent_{i}"
+
+        # Save the big text for later
+        parent_lookup[parent_id] = parent.page_content
+
+        # Chop this parent into tiny children
+        children = child_splitter.split_documents([parent])
+        for child in children:
+            # Attach the sticky note pointing to the parent
+            child.metadata["parent_id"] = parent_id
+            final_children.append(child)
+
+    # Save the lookup dictionary to disk
+    with open("parent_lookup.json", "w") as f:
+        json.dump(parent_lookup, f)
+
+    #  Store chunks and their corresponding embedding in vector store (batched)
+    if final_children:
         import time
 
-        # Create an empty vector store first
         vector_store = None
-        batch_size = 80  # Process 80 chunks (≈20k tokens) at a time
+        batch_size = 80
 
-        # Loop through the chunks in batches
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
+        # Loop through the CHILDREN in batches
+        for i in range(0, len(final_children), batch_size):
+            batch = final_children[i : i + batch_size]
             if vector_store is None:
-                vector_store = FAISS.from_texts(batch, embedding)
+                vector_store = FAISS.from_documents(batch, embedding)
             else:
-                vector_store.add_texts(batch)
+                vector_store.add_documents(batch)
 
-            # Wait 60 seconds between batches to respect the per-minute rate limit
             time.sleep(60)
 
         sl.session_state.vector_store = vector_store
         sl.session_state.processed_file = file.name
 
-        # Persist to disk so restarts don't require re-embedding
+        # Persist to disk
         vector_store.save_local(FAISS_INDEX_PATH)
         with open(PROCESSED_FILE_META, "w") as f:
             f.write(file.name)
