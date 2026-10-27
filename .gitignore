@@ -15,3 +15,10 @@ __pycache__/
 .idea/
 faiss_index/
 processed_file.txt
+
+faiss_index_eval/
+parent_lookup_eval.json
+ragas_testset.json
+optimized_bfs.json
+optimized_mipro.json
+final_evaluation_results.json
