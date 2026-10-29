@@ -283,12 +283,12 @@ def rag_metric(example, pred, trace=None):
 
 trainset = []
 
-for _, row in testset_df.iterrows():
-    ctx = "\n\n".join(retrieve_with_parents(row["question"]))
+for q, ref in zip(questions, references):
+    ctx = "\n\n".join(retrieve_with_parents(q))
     trainset.append(
-        dspy.Example(
-            question=row["question"], context=ctx, ground_truth=row["ground_truth"]
-        ).with_inputs("question", "context")
+        dspy.Example(question=q, context=ctx, ground_truth=ref).with_inputs(
+            "question", "context"
+        )
     )
 
 # BFS Optimization
