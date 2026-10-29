@@ -13,7 +13,7 @@ from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
 )
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_cohere import ChatCohere
+from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
@@ -90,7 +90,12 @@ os.environ["GEMINI_API_KEY"] = gemini_api_key
 
 embedding = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
 semantic_cache = SemanticCache(embedding=embedding, similarity_threshold=0.90)
-llm = ChatCohere(model="command-r7b-12-2024", temperature=0.7)
+
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0.0,
+    api_key=os.getenv("GROQ_API_KEY"),
+)
 
 
 # Node A: Retrieve (with Parent-Child swapping)
