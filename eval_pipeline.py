@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import pandas as pd
+from ragas import RunConfig
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -27,11 +29,17 @@ load_dotenv()
 
 
 generator_llm = ChatGroq(
-    model="llama-3.3-70b-versatile", temperature=0.0, api_key=os.getenv("GROQ_API_KEY")
+    model="openai/gpt-oss-120b",
+    temperature=0.0,
+    max_tokens=4096,
+    api_key=os.getenv("GROQ_API_KEY"),
 )
 
 judge_llm = ChatGroq(
-    model="llama-3.1-8b-instant", temperature=0.0, api_key=os.getenv("GROQ_API_KEY")
+    model="qwen/qwen3.8-27b",
+    temperature=0.0,
+    max_tokens=4096,
+    api_key=os.getenv("GROQ_API_KEY"),
 )
 
 # Gemini for embeddings
@@ -100,16 +108,10 @@ if os.path.exists(EVAL_INDEX_PATH):
     )
     with open(EVAL_PARENT_META, "r") as f:
         parent_lookup = json.load(f)
-
-    # If we need to generate the dataset, we need the parent chunks
-    if not os.path.exists("ragas_testset.json"):
-        _, _, parent_chunks = build_eval_vector_store()
-    else:
-        parent_chunks = []
 else:
-    vector_store, parent_lookup, parent_chunks = build_eval_vector_store()
+    vector_store, parent_lookup, _ = build_eval_vector_store()
 
-retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+retriever = vector_store.as_retriever(search_kwargs={"k": 1})
 
 
 def retrieve_with_parents(query):
@@ -200,7 +202,10 @@ def run_ragas_eval(answers, contexts, label):
         AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings),
     ]
 
-    result = evaluate(dataset=dataset, metrics=metrics)
+    # Force RAGAS to run one call at a time to avoid rate limits
+    config = RunConfig(max_workers=1, max_wait=60, timeout=180)
+    result = evaluate(dataset=dataset, metrics=metrics, run_config=config)
+
     df = result.to_pandas()
     scores = {
         col: round(float(df[col].mean()), 4)
@@ -226,6 +231,7 @@ for q in questions:
     ).content
     ss_answers.append(ans)
     ss_contexts.append(ctx_list)
+    time.sleep(60)
 baseline_single = run_ragas_eval(ss_answers, ss_contexts, "Single-Shot")
 
 print("\nRunning Agentic ReAct Baseline (Simplified)...")
@@ -234,29 +240,38 @@ for q in questions:
     ctx_list = retrieve_with_parents(q)
     ctx = "\n\n".join(ctx_list)
 
-    # Grade
+    # Grade Call
     grade = generator_llm.invoke(
         f"Can you answer '{q}' using ONLY this context? Reply YES or NO.\nContext:\n{ctx}"
     ).content
+    time.sleep(60)
+
     if "NO" in grade.upper():
+        # Rewrite Call
         refined_q = generator_llm.invoke(
             f"Original question: {q}. Generate ONE new search query to find missing info."
         ).content
+        time.sleep(60)
+
         new_ctx_list = retrieve_with_parents(refined_q)
         ctx_list.extend(new_ctx_list)
         ctx = "\n\n".join(ctx_list)
 
+    # Generate Call
     ans = generator_llm.invoke(
         f"Answer using ONLY this context:\n{ctx}\n\nQuestion: {q}"
     ).content
+    time.sleep(60)
+
     react_answers.append(ans)
     react_contexts.append(ctx_list)
+
 baseline_react = run_ragas_eval(react_answers, react_contexts, "ReAct")
 
 
 print("\nConfiguring DSPy (Local Phi-4)...")
 
-dspy_lm = dspy.LM("groq/llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
+dspy_lm = dspy.LM("groq/openai/gpt-oss-20b", api_key=os.getenv("GROQ_API_KEY"))
 dspy.configure(lm=dspy_lm)
 
 
