@@ -5,6 +5,7 @@ import pandas as pd
 from ragas import RunConfig
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -40,6 +41,13 @@ judge_llm = ChatGroq(
     temperature=0.0,
     max_tokens=4096,
     api_key=os.getenv("GROQ_API_KEY"),
+)
+
+# Used ONLY for the AnswerRelevancy n=3 step
+gemini_relevancy_llm = ChatGoogleGenerativeAI(
+    model="gemini-3.8-flash",
+    google_api_key=os.getenv("GEMINI_API_KEY"),
+    temperature=0.0,
 )
 
 # Gemini for embeddings
@@ -196,10 +204,12 @@ def run_ragas_eval(answers, contexts, label):
     ]
     dataset = EvaluationDataset(samples=samples)
 
-    # ONLY 2 METRICS
     metrics = [
         Faithfulness(llm=ragas_llm),
-        AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings),
+        AnswerRelevancy(
+            llm=LangchainLLMWrapper(gemini_relevancy_llm),  # Uses Gemini for n=3
+            embeddings=ragas_embeddings,
+        ),
     ]
 
     # Force RAGAS to run one call at a time to avoid rate limits
