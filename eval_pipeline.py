@@ -37,17 +37,10 @@ generator_llm = ChatGroq(
 )
 
 judge_llm = ChatGroq(
-    model="qwen/qwen3.8-27b",
+    model="openai/gpt-oss-20b",
     temperature=0.0,
     max_tokens=4096,
     api_key=os.getenv("GROQ_API_KEY"),
-)
-
-# Used ONLY for the AnswerRelevancy n=3 step
-gemini_relevancy_llm = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    google_api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=0.0,
 )
 
 # Gemini for embeddings
@@ -207,8 +200,9 @@ def run_ragas_eval(answers, contexts, label):
     metrics = [
         Faithfulness(llm=ragas_llm),
         AnswerRelevancy(
-            llm=LangchainLLMWrapper(gemini_relevancy_llm),  # Uses Gemini for n=3
+            llm=ragas_llm,
             embeddings=ragas_embeddings,
+            strictness=1,
         ),
     ]
 
@@ -281,7 +275,10 @@ baseline_react = run_ragas_eval(react_answers, react_contexts, "ReAct")
 
 print("\nConfiguring DSPy (Local Phi-4)...")
 
-dspy_lm = dspy.LM("groq/openai/gpt-oss-20b", api_key=os.getenv("GROQ_API_KEY"))
+
+dspy_lm = dspy.LM(
+    "groq/qwen/qwen3.8-27b", max_tokens=800, api_key=os.getenv("GROQ_API_KEY")
+)
 dspy.configure(lm=dspy_lm)
 
 
