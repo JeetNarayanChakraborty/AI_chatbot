@@ -1,8 +1,11 @@
 import os
 import json
 import time
+import instructor
 import pandas as pd
 from ragas import RunConfig
+from openai import AsyncOpenAI
+from ragas.llms import llm_factory
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -29,6 +32,10 @@ from ragas.metrics import Faithfulness, AnswerRelevancy
 load_dotenv()
 
 
+groq_client = AsyncOpenAI(
+    api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1"
+)
+
 generator_llm = ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0.0,
@@ -36,11 +43,12 @@ generator_llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY"),
 )
 
-judge_llm = ChatGroq(
+judge_llm = llm_factory(
     model="openai/gpt-oss-20b",
-    temperature=0.0,
+    provider="openai",
+    client=groq_client,
     max_tokens=4096,
-    api_key=os.getenv("GROQ_API_KEY"),
+    mode=instructor.Mode.JSON_SCHEMA,
 )
 
 # Gemini for embeddings
@@ -48,7 +56,7 @@ gemini_embeddings = GoogleGenerativeAIEmbeddings(
     model="gemini-embedding-001", google_api_key=os.getenv("GEMINI_API_KEY")
 )
 
-ragas_llm = LangchainLLMWrapper(judge_llm)
+
 ragas_embeddings = LangchainEmbeddingsWrapper(gemini_embeddings)
 
 
@@ -191,36 +199,64 @@ references = [item["answer"] for item in rag_evaluation_dataset]
 
 def run_ragas_eval(answers, contexts, label):
     print(f"Evaluating {label} (using 8B judge + 2 metrics)...")
-    samples = [
+
+    # Create all samples first
+    all_samples = [
         SingleTurnSample(user_input=q, response=a, retrieved_contexts=c, reference=r)
         for q, a, c, r in zip(questions, answers, contexts, references)
     ]
-    dataset = EvaluationDataset(samples=samples)
 
     metrics = [
-        Faithfulness(llm=ragas_llm),
+        Faithfulness(llm=judge_llm),
         AnswerRelevancy(
-            llm=ragas_llm,
+            llm=judge_llm,
             embeddings=ragas_embeddings,
             strictness=1,
         ),
     ]
 
-    # Force RAGAS to run one call at a time to avoid rate limits
+    # Force RAGAS to run one call at a time
     config = RunConfig(max_workers=1, max_wait=60, timeout=180)
-    result = evaluate(dataset=dataset, metrics=metrics, run_config=config)
+    all_scores = []
 
-    df = result.to_pandas()
-    scores = {
-        col: round(float(df[col].mean()), 4)
-        for col in df.columns
-        if col not in ["user_input", "response", "retrieved_contexts", "reference"]
-    }
+    # Process in batches of 2 questions
+    batch_size = 2
+
+    for i in range(0, len(all_samples), batch_size):
+        batch_samples = all_samples[i : i + batch_size]
+        dataset = EvaluationDataset(samples=batch_samples)
+
+        print(
+            f"  -> Evaluating batch {i//batch_size + 1} of {(len(all_samples) + batch_size - 1)//batch_size}..."
+        )
+
+        result = evaluate(dataset=dataset, metrics=metrics, run_config=config)
+        df = result.to_pandas()
+
+        # Extract scores from this batch
+        batch_scores = {
+            col: round(float(df[col].mean()), 4)
+            for col in df.columns
+            if col not in ["user_input", "response", "retrieved_contexts", "reference"]
+        }
+        all_scores.append(batch_scores)
+
+        # If this isn't the last batch, wait 20 seconds for the TPM window to reset
+        if i + batch_size < len(all_samples):
+            print("  -> Sleeping 20s to avoid TPM rate limit...")
+            time.sleep(20)
+
+    # Average the scores across all batches
+    final_scores = {}
+    for metric in all_scores[0].keys():
+        final_scores[metric] = round(
+            sum(batch[metric] for batch in all_scores) / len(all_scores), 4
+        )
 
     print(f"--- {label} Scores ---")
-    for k, v in scores.items():
+    for k, v in final_scores.items():
         print(f"{k}: {v}")
-    return scores
+    return final_scores
 
 
 # RUN BASELINES
@@ -318,7 +354,7 @@ for q, ref in zip(questions, references):
 print("\nRunning BootstrapFewShot...")
 student = RAGPipeline()
 optimizer_bfs = BootstrapFewShot(
-    metric=rag_metric, max_bootstrapped_demos=3, max_labeled_demos=3
+    metric=rag_metric, max_bootstrapped_demos=0, max_labeled_demos=0
 )
 optimized_bfs = optimizer_bfs.compile(student, trainset=trainset)
 optimized_bfs.save("optimized_bfs.json")
@@ -339,7 +375,7 @@ bfs_scores = run_ragas_eval(bfs_answers, bfs_contexts, "BootstrapFewShot")
 # MIPROv2 Optimization (2 trials)
 
 print("\nRunning MIPROv2 (num_trials=2)...")
-optimizer_mipro = MIPROv2(metric=rag_metric, num_trials=2)
+optimizer_mipro = MIPROv2(metric=rag_metric, num_trials=1)
 optimized_mipro = optimizer_mipro.compile(RAGPipeline(), trainset=trainset)
 optimized_mipro.save("optimized_mipro.json")
 
